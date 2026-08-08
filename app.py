@@ -1,187 +1,228 @@
+import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import plotly.graph_objects as go
 
 # ==========================================
 # KONFIGURASI HALAMAN UTAMA
 # ==========================================
-st.set_page_config(page_title="Sistem Analisis Fundamental", layout="wide")
-st.title("Sistem Analisis Fundamental & Valuasi Saham")
+st.set_page_config(page_title="Dashboard Fundamental & Valuasi", layout="wide")
+st.title("📈 Dashboard Analisis Fundamental & Valuasi")
 
-# Input Saham
-ticker_symbol = st.text_input("Masukkan Kode Saham (Wajib tambahkan .JK untuk emiten IHSG, contoh: ASII.JK)", value="ASII.JK").upper()
+# ==========================================
+# WIDGET INPUT SAHAM
+# ==========================================
+col1, col2 = st.columns(2)
+with col1:
+    ticker_symbol = st.text_input("Masukkan Kode Saham (Wajib tambahkan .JK untuk emiten IHSG)", value="BBCA.JK")
+with col2:
+    periode = st.selectbox("Pilih Periode Laporan Keuangan", ["Tahunan (Annually)", "Kuartalan (Quarterly)"])
 
-if st.button("Eksekusi Analisis"):
-    with st.spinner('Menarik data dari bursa...'):
-        try:
+if st.button("Analisis Sekarang"):
+    try:
+        with st.spinner('Menarik data dari server...'):
+            # Menarik data dari API Yahoo Finance
             saham = yf.Ticker(ticker_symbol)
             info = saham.info
             
-            # Tarik Data Keuangan Terbaru (Tahunan)
-            keuangan = saham.financials
-            neraca = saham.balance_sheet
+            # Ekstraksi Data Historis (Harga & Laporan)
+            hist_1d = saham.history(period="1d")
+            if hist_1d.empty:
+                st.error("Data harga tidak ditemukan. Pastikan format kode saham benar.")
+                st.stop()
+            harga_sekarang = hist_1d['Close'].iloc[-1]
             
-            if keuangan.empty or neraca.empty:
-                st.error("Data laporan keuangan tidak tersedia untuk emiten ini.")
+            if periode == "Tahunan (Annually)":
+                income_stmt = saham.financials
+                balance_sheet = saham.balance_sheet
+            else:
+                income_stmt = saham.quarterly_financials
+                balance_sheet = saham.quarterly_balance_sheet
+                
+            if income_stmt.empty or balance_sheet.empty:
+                st.warning("Data laporan keuangan tidak tersedia untuk emiten ini.")
                 st.stop()
                 
-            tanggal_laporan = keuangan.columns[0].strftime('%Y-%m-%d')
-            harga_sekarang = saham.history(period="1d")['Close'].iloc[-1]
+            tanggal_terbaru = income_stmt.columns[0]
             
-            st.divider()
-
-            # ==========================================
-            # LOGIKA 1 & 2: PROFIL & BIDANG USAHA
-            # ==========================================
-            st.header(f"1 & 2. Profil Perusahaan: {info.get('longName', ticker_symbol)}")
-            st.markdown(f"**Sektor:** {info.get('sector', '-')} | **Industri Utama:** {info.get('industry', '-')}")
+            # Ekstraksi Data Finansial Mentah
+            laba_bersih = income_stmt.loc['Net Income'].iloc[0] if 'Net Income' in income_stmt.index else info.get('netIncomeToCommon', 0)
+            pendapatan = income_stmt.loc['Total Revenue'].iloc[0] if 'Total Revenue' in income_stmt.index else info.get('totalRevenue', 0)
+            beban_total = pendapatan - laba_bersih # Pendekatan sederhana Total Beban
             
-            st.markdown("**Deskripsi & Bidang Usaha:**")
-            # Catatan: yfinance tidak merinci 'cabang usaha' secara terpisah, semuanya tergabung dalam deskripsi bisnis utama
-            st.write(info.get('longBusinessSummary', 'Deskripsi tidak tersedia.'))
+            total_aset = balance_sheet.loc['Total Assets'].iloc[0] if 'Total Assets' in balance_sheet.index else info.get('totalAssets', 0)
+            total_ekuitas = balance_sheet.loc['Stockholders Equity'].iloc[0] if 'Stockholders Equity' in balance_sheet.index else info.get('totalStockholderEquity', 0)
             
-            st.divider()
-
-            # ==========================================
-            # LOGIKA 3: GRAFIK ASET, PENDAPATAN, LABA, BEBAN
-            # ==========================================
-            st.header("3. Kinerja Finansial (4 Pilar)")
-            
-            # Ekstraksi Data 4 Tahun Terakhir
-            hist_aset = neraca.loc['Total Assets'] if 'Total Assets' in neraca.index else pd.Series(dtype=float)
-            hist_pendapatan = keuangan.loc['Total Revenue'] if 'Total Revenue' in keuangan.index else pd.Series(dtype=float)
-            hist_laba = keuangan.loc['Net Income'] if 'Net Income' in keuangan.index else pd.Series(dtype=float)
-            
-            # Estimasi Beban (Jika 'Total Expenses' tidak ada, gunakan Pendapatan - Laba Bersih)
-            if 'Total Expenses' in keuangan.index:
-                hist_beban = keuangan.loc['Total Expenses']
-            else:
-                hist_beban = hist_pendapatan - hist_laba
-
-            df_grafik = pd.DataFrame({
-                'Total Aset': hist_aset,
-                'Pendapatan': hist_pendapatan,
-                'Beban Total': hist_beban,
-                'Laba Bersih': hist_laba
-            }).sort_index()
-
-            fig3 = go.Figure()
-            tahun_labels = df_grafik.index.strftime('%Y')
-            warna = {'Total Aset': '#1f77b4', 'Pendapatan': '#2ca02c', 'Beban Total': '#d62728', 'Laba Bersih': '#ff7f0e'}
-            
-            for kolom in df_grafik.columns:
-                fig3.add_trace(go.Bar(x=tahun_labels, y=df_grafik[kolom], name=kolom, marker_color=warna[kolom]))
-            
-            fig3.update_layout(barmode='group', xaxis_title="Tahun", yaxis_title="Rupiah", margin=dict(l=0, r=0, t=30, b=0))
-            st.plotly_chart(fig3, use_container_width=True)
-
-            st.divider()
-
-            # ==========================================
-            # LOGIKA 4: STRUKTUR UTANG, EKUITAS & KEPEMILIKAN
-            # ==========================================
-            st.header("4. Struktur Modal & Kepemilikan")
-            
-            # Ekstraksi data neraca terbaru
-            total_aset = hist_aset.iloc[0] if not hist_aset.empty else 0
-            total_ekuitas = neraca.loc['Stockholders Equity'].iloc[0] if 'Stockholders Equity' in neraca.index else 0
-            
-            if 'Total Liabilities Net Minority Interest' in neraca.index:
-                total_utang = neraca.loc['Total Liabilities Net Minority Interest'].iloc[0]
+            if 'Total Liabilities Net Minority Interest' in balance_sheet.index:
+                total_utang = balance_sheet.loc['Total Liabilities Net Minority Interest'].iloc[0]
             else:
                 total_utang = total_aset - total_ekuitas
                 
-            col4a, col4b = st.columns(2)
-            with col4a:
-                st.markdown("**Komposisi Modal (Terbaru):**")
-                st.metric("Total Utang (Liabilitas)", f"Rp {total_utang:,.0f}")
-                st.metric("Total Ekuitas", f"Rp {total_ekuitas:,.0f}")
+            aset_lancar = balance_sheet.loc['Current Assets'].iloc[0] if 'Current Assets' in balance_sheet.index else 0
+            utang_lancar = balance_sheet.loc['Current Liabilities'].iloc[0] if 'Current Liabilities' in balance_sheet.index else 0
+            
+            saham_beredar = info.get('sharesOutstanding', 1) 
+            
+            # Kalkulasi Rasio
+            roa = (laba_bersih / total_aset) * 100 if total_aset else 0
+            roe = (laba_bersih / total_ekuitas) * 100 if total_ekuitas else 0
+            # Estimasi ROI menggunakan ROIC (Return on Invested Capital)
+            modal_diinvestasikan = total_ekuitas + total_utang
+            roi = (laba_bersih / modal_diinvestasikan) * 100 if modal_diinvestasikan else 0
+            
+            eps = laba_bersih / saham_beredar if saham_beredar else 0
+            bvps = total_ekuitas / saham_beredar if saham_beredar else 0
+            market_cap = harga_sekarang * saham_beredar
+            per = harga_sekarang / eps if eps > 0 else 0
+            pbv = harga_sekarang / bvps if bvps > 0 else 0
+            
+            # Indikator Kesehatan
+            der = (total_utang / total_ekuitas) if total_ekuitas else 0
+            current_ratio = (aset_lancar / utang_lancar) if utang_lancar else 0
+
+            # ==========================================
+            # POIN 1 & 2: DESKRIPSI & BIDANG USAHA (HEADER)
+            # ==========================================
+            nama_perusahaan = info.get('longName', ticker_symbol)
+            sektor = info.get('sector', 'Tidak Tersedia')
+            industri = info.get('industry', 'Tidak Tersedia')
+            deskripsi = info.get('longBusinessSummary', 'Deskripsi perusahaan tidak tersedia.')
+            
+            st.header(f"{nama_perusahaan}")
+            st.caption(f"Sektor: {sektor} | Industri Utama: {industri}")
+            st.write(deskripsi)
+            st.divider()
+
+            # ==========================================
+            # PEMBAGIAN TAB UTAMA
+            # ==========================================
+            tab1, tab2, tab3 = st.tabs(["📊 Profil & Kinerja (Grafik)", "⚖️ VALUASI OTOMATIS & Kesehatan", "📥 Ekspor Laporan"])
+            
+            # ------------------------------------------
+            # TAB 1: PROFIL & KINERJA GRAFIK (POIN 3, 4, 9)
+            # ------------------------------------------
+            with tab1:
+                col_k1, col_k2 = st.columns(2)
                 
-            with col4b:
-                st.markdown("**Pemegang Ekuitas Terbesar:**")
-                major_holders = saham.major_holders
-                if major_holders is not None and not major_holders.empty:
-                    if len(major_holders.columns) == 2:
-                        major_holders.columns = ['Persentase', 'Keterangan']
-                    st.dataframe(major_holders, use_container_width=True, hide_index=True)
+                # POIN 4: Struktur Utang, Ekuitas & Pemegang Saham
+                with col_k1:
+                    st.markdown("### Struktur Modal (Terkini)")
+                    st.metric("Total Ekuitas", f"Rp {total_ekuitas:,.0f}")
+                    st.metric("Total Utang (Liabilitas)", f"Rp {total_utang:,.0f}")
+                
+                with col_k2:
+                    st.markdown("### Kepemilikan Ekuitas Terbesar")
+                    major_holders = saham.major_holders
+                    if major_holders is not None and not major_holders.empty:
+                        # Perbaikan logika kolom agar tidak error
+                        if len(major_holders.columns) == 2:
+                            major_holders.columns = ['Persentase', 'Keterangan'] 
+                        st.dataframe(major_holders, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("Data pemegang saham tidak tersedia.")
+                        
+                st.divider()
+                
+                # POIN 3: Grafik Total Aset, Pendapatan, Laba Bersih, Beban
+                st.markdown("### Grafik Kinerja Keuangan Historis")
+                hist_inc = saham.financials
+                hist_bal = saham.balance_sheet
+                
+                if not hist_inc.empty and not hist_bal.empty:
+                    df_grafik = pd.DataFrame()
+                    
+                    df_grafik['Total Aset'] = hist_bal.loc['Total Assets'] if 'Total Assets' in hist_bal.index else pd.Series(dtype=float)
+                    df_grafik['Pendapatan'] = hist_inc.loc['Total Revenue'] if 'Total Revenue' in hist_inc.index else pd.Series(dtype=float)
+                    df_grafik['Laba Bersih'] = hist_inc.loc['Net Income'] if 'Net Income' in hist_inc.index else pd.Series(dtype=float)
+                    df_grafik['Total Beban'] = df_grafik['Pendapatan'] - df_grafik['Laba Bersih']
+                    
+                    df_grafik = df_grafik.sort_index()
+                    
+                    fig_kinerja = go.Figure()
+                    tahun_labels = df_grafik.index.strftime('%Y')
+                    warna = {'Total Aset': '#1f77b4', 'Pendapatan': '#2ca02c', 'Total Beban': '#d62728', 'Laba Bersih': '#ff7f0e'}
+                    
+                    for kolom in df_grafik.columns:
+                        fig_kinerja.add_trace(go.Bar(
+                            x=tahun_labels, y=df_grafik[kolom], name=kolom, marker_color=warna[kolom]
+                        ))
+                    
+                    fig_kinerja.update_layout(barmode='group', xaxis_title="Tahun", yaxis_title="Rupiah", margin=dict(l=0, r=0, t=30, b=0))
+                    st.plotly_chart(fig_kinerja, use_container_width=True)
                 else:
-                    st.write("Data kepemilikan tidak tersedia.")
-            
-            st.divider()
+                    st.info("Data histori laporan keuangan tidak tersedia untuk dibuat grafik.")
 
-            # ==========================================
-            # LOGIKA 6: KESEHATAN PERUSAHAAN (Dihitung sebelum Valuasi)
-            # ==========================================
-            st.header("6. Kesehatan Perusahaan (Likuiditas & Solvabilitas)")
-            
-            # Likuiditas: Current Ratio
-            aset_lancar = neraca.loc['Current Assets'].iloc[0] if 'Current Assets' in neraca.index else 0
-            utang_lancar = neraca.loc['Current Liabilities'].iloc[0] if 'Current Liabilities' in neraca.index else 0
-            
-            cr = (aset_lancar / utang_lancar) if utang_lancar > 0 else 0
-            
-            # Solvabilitas: Debt to Equity Ratio (DER)
-            der = (total_utang / total_ekuitas) if total_ekuitas > 0 else 0
-            
-            col6a, col6b = st.columns(2)
-            with col6a:
-                st.metric("Current Ratio (Likuiditas)", f"{cr:.2f}x")
-                if cr > 1.5: st.success("Likuiditas Aman (Aset lancar menutupi utang jangka pendek)")
-                elif cr > 1: st.warning("Likuiditas Cukup")
-                else: st.error("Likuiditas Rentan (Aset lancar < Utang jangka pendek)")
+            # ------------------------------------------
+            # TAB 2: VALUASI OTOMATIS (POIN 5, 6, 7, 8)
+            # ------------------------------------------
+            with tab2:
+                st.markdown(f"## Laporan Analisis & Rekomendasi (Update: {tanggal_terbaru.strftime('%Y-%m-%d')})")
                 
-            with col6b:
-                st.metric("Debt to Equity Ratio / DER (Solvabilitas)", f"{der:.2f}x")
-                if der < 1: st.success("Solvabilitas Aman (Modal lebih besar dari utang)")
-                elif der < 2: st.warning("Utang Cukup Tinggi")
-                else: st.error("Solvabilitas Rentan (Utang jauh lebih besar dari modal)")
-
-            st.divider()
-
-            # ==========================================
-            # LOGIKA 5 & 7: KELAYAKAN BELI, PROFITABILITAS, & KOMPARASI HARGA WAJAR
-            # ==========================================
-            st.header("5 & 7. Profitabilitas & Kesimpulan Valuasi Saham")
-            st.caption(f"Menggunakan data laporan keuangan terbaru per: {tanggal_laporan}")
-            
-            laba_bersih = hist_laba.iloc[0] if not hist_laba.empty else 0
-            saham_beredar = info.get('sharesOutstanding', 1)
-            
-            # Hitung Profitabilitas
-            roa = (laba_bersih / total_aset) * 100 if total_aset > 0 else 0
-            roe = (laba_bersih / total_ekuitas) * 100 if total_ekuitas > 0 else 0
-            # ROI (Return on Invested Capital) didekati dengan ROIC jika tersedia, jika tidak gunakan ROE
-            roi = info.get('returnOnCapitalEmployed', roe / 100) * 100
-            
-            eps = laba_bersih / saham_beredar if saham_beredar > 0 else 0
-            bvps = total_ekuitas / saham_beredar if saham_beredar > 0 else 0
-            
-            # Hitung Harga Wajar (Intrinsic Value menggunakan Graham Number)
-            harga_wajar = (22.5 * eps * bvps) ** 0.5 if (eps > 0 and bvps > 0) else 0
-            
-            col7a, col7b = st.columns(2)
-            with col7a:
-                st.markdown("**Metrik Profitabilitas:**")
-                st.write(f"- **ROA:** {roa:.2f}%")
-                st.write(f"- **ROE:** {roe:.2f}%")
-                st.write(f"- **ROI (ROIC):** {roi:.2f}%")
+                col_v1, col_v2 = st.columns(2)
                 
-            with col7b:
-                st.markdown("**Komparasi Harga (Real-Time vs Laporan Terbaru):**")
-                st.metric("Harga Saham Saat Ini", f"Rp {harga_sekarang:,.0f}")
-                st.metric("Harga Wajar (Intrinsic Value)", f"Rp {harga_wajar:,.0f}")
-            
-            # Logika Kesimpulan "Layak Beli"
-            st.markdown("### Kesimpulan Analisis:")
-            if harga_wajar == 0:
-                st.info("⚠️ Valuasi tidak dapat dihitung karena perusahaan mencetak rugi bersih (EPS negatif). Evaluasi ulang kelayakan investasi.")
-            elif harga_sekarang < harga_wajar and roe > 10 and der < 1.5:
-                st.success(f"✅ **LAYAK BELI (BUY):** Saham berada di bawah harga wajarnya (Undervalued), memiliki profitabilitas yang baik (ROE > 10%), dan tingkat utang terkendali (DER < 1.5).")
-            elif harga_sekarang < harga_wajar:
-                st.warning(f"⚖️ **PEMANTAUAN (WATCHLIST):** Saham ini murah secara valuasi, namun perhatikan kualitas fundamental lainnya (ROE saat ini {roe:.2f}% dan DER {der:.2f}x).")
-            else:
-                st.error(f"❌ **TIDAK LAYAK BELI (MAHAL):** Harga pasar saat ini sudah melampaui harga wajarnya berdasarkan kinerja keuangan terakhir (Overvalued).")
+                # POIN 6: Kesehatan Perusahaan (Manajemen, Likuiditas, Solvabilitas)
+                with col_v1:
+                    st.markdown("### 🏥 Cek Kesehatan Perusahaan")
+                    st.write("**Solvabilitas (Debt to Equity Ratio / DER):**")
+                    if der > 1:
+                        st.warning(f"DER: {der:.2f}x (Risiko Utang Tinggi: Utang melebihi Ekuitas)")
+                    else:
+                        st.success(f"DER: {der:.2f}x (Sehat: Ekuitas lebih besar dari Utang)")
+                        
+                    st.write("**Likuiditas (Current Ratio):**")
+                    if current_ratio >= 1:
+                        st.success(f"CR: {current_ratio:.2f}x (Aman: Aset lancar menutupi utang jangka pendek)")
+                    elif current_ratio > 0:
+                        st.warning(f"CR: {current_ratio:.2f}x (Waspada: Kesulitan bayar utang jangka pendek)")
+                    else:
+                        st.info("Data Aset/Utang Lancar tidak tersedia.")
+                        
+                    st.write("**Efisiensi & Profitabilitas:**")
+                    st.metric("ROA (Return on Asset)", f"{roa:.2f}%")
+                    st.metric("ROE (Return on Equity)", f"{roe:.2f}%")
+                    st.metric("ROI (Return on Investment)", f"{roi:.2f}%")
 
-        except Exception as e:
-            st.error(f"Terjadi kesalahan saat mengeksekusi logika analisis: {e}")
+                # POIN 5 & 7: Kelayakan Beli, Harga Wajar, vs Harga Terkini
+                with col_v2:
+                    st.markdown("### ⚖️ Valuasi & Rekomendasi Beli")
+                    st.metric("Harga Saham Terkini", f"Rp {harga_sekarang:,.0f}")
+                    
+                    if eps > 0 and bvps > 0:
+                        harga_wajar = (22.5 * eps * bvps) ** 0.5
+                        st.metric("Estimasi Harga Wajar (Graham)", f"Rp {harga_wajar:,.0f}")
+                        
+                        margin_of_safety = ((harga_wajar - harga_sekarang) / harga_wajar) * 100
+                        
+                        if harga_sekarang < harga_wajar:
+                            st.success(f"✅ **LAYAK BELI (Undervalued)**")
+                            st.write(f"Harga saat ini lebih murah dari harga wajarnya dengan Margin of Safety sebesar **{margin_of_safety:.2f}%**.")
+                        else:
+                            st.error(f"❌ **TIDAK DIREKOMENDASIKAN (Overvalued)**")
+                            st.write(f"Harga saat ini sudah lebih mahal dari estimasi nilai intrinsiknya (Premium **{abs(margin_of_safety):.2f}%**).")
+                    else:
+                        st.info("Valuasi tidak dapat dihitung otomatis karena EPS atau Nilai Buku bernilai negatif (Perusahaan merugi).")
+
+            # ------------------------------------------
+            # TAB 3: EKSPOR LAPORAN (POIN 10)
+            # ------------------------------------------
+            with tab3:
+                st.markdown("### 📥 Tabel Data Keuangan & Rasio Utama")
+                st.write("Data di bawah ini siap diekspor untuk kebutuhan dokumentasi laporan.")
+                
+                df_export = pd.DataFrame({
+                    "Indikator": ["Harga Terkini", "Market Cap", "ROA (%)", "ROE (%)", "ROI (%)", "EPS (Laba Per Lembar)", "BVPS (Nilai Buku)", "PER (x)", "PBV (x)"],
+                    "Nilai": [harga_sekarang, market_cap, roa, roe, roi, eps, bvps, per, pbv]
+                })
+                
+                st.dataframe(df_export, use_container_width=True)
+                
+                csv_data = df_export.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Download Format CSV",
+                    data=csv_data,
+                    file_name=f"Laporan_Fundamental_{ticker_symbol}.csv",
+                    mime="text/csv"
+                )
+                
+    except Exception as e:
+        st.error(f"Terjadi kendala sistem: {e}")
